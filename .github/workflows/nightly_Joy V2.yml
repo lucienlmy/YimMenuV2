@@ -42,6 +42,7 @@ jobs:
     outputs:
       full_sha: ${{ steps.var.outputs.full_sha }}
       short_sha: ${{ steps.var.outputs.short_sha }}
+      branch: ${{ steps.var.outputs.branch }}
       commits: ${{ steps.commit_info.outputs.commits }}
       commit_count: ${{ steps.count.outputs.commit_count }}
     steps:
@@ -81,6 +82,7 @@ jobs:
         run: |
           echo "full_sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
           echo "short_sha=$(git rev-parse --short HEAD)" >> $env:GITHUB_OUTPUT
+          echo "branch=$(git branch --show-current)" >> $env:GITHUB_OUTPUT
 
       - name: Get Commit Count
         id: count
@@ -142,6 +144,9 @@ jobs:
     if: needs.check_recent_commit.outputs.should_run == 'true'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build_nightly.outputs.full_sha }}
+          fetch-depth: 0
 
       - name: Delete Existing Release (nightly)
         uses: actions/github-script@v7
@@ -149,7 +154,8 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const tag = "nightly";
+            const branch = "${{ needs.build_nightly.outputs.branch }}";
+            const tag = `nightly-${branch}`;
             const releases = await github.rest.repos.listReleases({ owner, repo });
             const release = releases.data.find(r => r.tag_name === tag);
             if (release) {
@@ -158,7 +164,7 @@ jobs:
             try {
               await github.rest.git.deleteRef({ owner, repo, ref: `tags/${tag}` });
             } catch (e) {
-              console.log("No existing nightly tag to delete");
+              console.log(`No existing ${tag} tag to delete`);
             }
 
       - name: Download DLL Artifact
@@ -181,10 +187,11 @@ jobs:
       - name: Nightly Release (latest)
         uses: softprops/action-gh-release@v2.2.2
         with:
-          name: Nightly [${{ needs.build_nightly.outputs.short_sha }}] (${{ github.event_name }})
-          tag_name: nightly
+          name: Nightly [${{ needs.build_nightly.outputs.short_sha }}] (${{ github.event_name }} - ${{ needs.build_nightly.outputs.branch }})
+          tag_name: nightly-${{ needs.build_nightly.outputs.branch }}
           body: |
             **Latest nightly build**
+            Branch: `${{ needs.build_nightly.outputs.branch }}`
             Trigger: `${{ github.event_name }}`
             Commit: `${{ needs.build_nightly.outputs.full_sha }}`
 
@@ -210,10 +217,11 @@ jobs:
       - name: Nightly Release (archived)
         uses: softprops/action-gh-release@v2.2.2
         with:
-          name: Nightly Archive [${{ needs.build_nightly.outputs.commit_count }}]
-          tag_name: nightly-${{ needs.build_nightly.outputs.commit_count }}
+          name: Nightly Archive [${{ needs.build_nightly.outputs.commit_count }}] (${{ needs.build_nightly.outputs.branch }})
+          tag_name: nightly-${{ needs.build_nightly.outputs.branch }}-${{ needs.build_nightly.outputs.commit_count }}
           body: |
             **Archived nightly build**
+            Branch: `${{ needs.build_nightly.outputs.branch }}`
             Trigger: `${{ github.event_name }}`
             Commit: `${{ needs.build_nightly.outputs.full_sha }}`
 
