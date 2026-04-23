@@ -189,6 +189,7 @@ jobs:
         with:
           name: Nightly [${{ needs.build_nightly.outputs.short_sha }}] (${{ github.event_name }} - ${{ needs.build_nightly.outputs.branch }})
           tag_name: nightly-${{ needs.build_nightly.outputs.branch }}
+          target_commitish: ${{ needs.build_nightly.outputs.full_sha }}
           body: |
             **Latest nightly build**
             Branch: `${{ needs.build_nightly.outputs.branch }}`
@@ -219,6 +220,7 @@ jobs:
         with:
           name: Nightly Archive [${{ needs.build_nightly.outputs.commit_count }}] (${{ needs.build_nightly.outputs.branch }})
           tag_name: nightly-${{ needs.build_nightly.outputs.branch }}-${{ needs.build_nightly.outputs.commit_count }}
+          target_commitish: ${{ needs.build_nightly.outputs.full_sha }}
           body: |
             **Archived nightly build**
             Branch: `${{ needs.build_nightly.outputs.branch }}`
