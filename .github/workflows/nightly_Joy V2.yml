@@ -191,6 +191,8 @@ jobs:
           tag_name: nightly-${{ needs.build_nightly.outputs.branch }}
           target_commitish: ${{ needs.build_nightly.outputs.full_sha }}
           body: |
+            [Link to build](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
             **Latest nightly build**
             Branch: `${{ needs.build_nightly.outputs.branch }}`
             Trigger: `${{ github.event_name }}`
@@ -222,6 +224,8 @@ jobs:
           tag_name: nightly-${{ needs.build_nightly.outputs.branch }}-${{ needs.build_nightly.outputs.commit_count }}
           target_commitish: ${{ needs.build_nightly.outputs.full_sha }}
           body: |
+            [Link to build](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
             **Archived nightly build**
             Branch: `${{ needs.build_nightly.outputs.branch }}`
             Trigger: `${{ github.event_name }}`
