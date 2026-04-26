@@ -33,10 +33,12 @@ jobs:
 
       # 切换到 Joy 分支并变基到 enhanced
       - name: Merge enhanced to Joy
+        id: merge
         run: |
           git checkout Joy
           git rebase origin/enhanced
           git push origin Joy --force-with-lease
+          echo "joy_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -50,6 +52,8 @@ jobs:
       should_run: ${{ steps.should_run.outputs.should_run }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: Joy  # 检出 Joy 分支
       - id: should_run
         run: |
           # push 和 workflow_dispatch 事件始终执行
@@ -79,10 +83,11 @@ jobs:
       commits: ${{ steps.commit_info.outputs.commits }}
       commit_count: ${{ steps.count.outputs.commit_count }}
     steps:
-      # 检出代码，包含子模块
+      # 检出 Joy 分支，包含子模块
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: Joy  # 检出 Joy 分支
           submodules: recursive
           fetch-depth: 0
 
