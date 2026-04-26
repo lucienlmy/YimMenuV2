@@ -1,0 +1,303 @@
+name: Auto Merge enhanced to Joy
+
+on:
+  push:
+    branches:
+      - enhanced
+  schedule:
+    - cron: '*/5 * * * *'  # 每5分钟检查一次
+  workflow_dispatch:  # 允许手动触发
+
+concurrency:
+  group: auto-merge-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ========================================
+  # 第一阶段：合并 enhanced 分支到 Joy 分支
+  # ========================================
+  merge-to-joy:
+    runs-on: ubuntu-latest
+    steps:
+      # 检出完整仓库历史
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 配置 Git 提交者身份
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+
+      # 切换到 Joy 分支并变基到 enhanced
+      - name: Merge enhanced to Joy
+        run: |
+          git checkout Joy
+          git rebase origin/enhanced
+          git push origin Joy --force-with-lease
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ========================================
+  # 第二阶段：检查是否有需要构建的提交
+  # ========================================
+  check_recent_commit:
+    runs-on: ubuntu-latest
+    name: Check Recent Commit
+    outputs:
+      should_run: ${{ steps.should_run.outputs.should_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: should_run
+        run: |
+          # push 和 workflow_dispatch 事件始终执行
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          # 定时任务检查 24 小时是否有新提交
+          elif [ -z "$(git rev-list --since="24 hours ago" --all)" ]; then
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          fi
+
+  # ========================================
+  # 第三阶段：构建 Nightly 版本
+  # ========================================
+  build_nightly:
+    runs-on: windows-latest
+    name: Build Nightly
+    needs: check_recent_commit
+    if: needs.check_recent_commit.outputs.should_run == 'true'
+    outputs:
+      full_sha: ${{ steps.var.outputs.full_sha }}
+      short_sha: ${{ steps.var.outputs.short_sha }}
+      branch: ${{ steps.var.outputs.branch }}
+      commits: ${{ steps.commit_info.outputs.commits }}
+      commit_count: ${{ steps.count.outputs.commit_count }}
+    steps:
+      # 检出代码，包含子模块
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # 检查 CMake 版本
+      - name: Check CMake version
+        run: cmake --version
+
+      # 设置 MSVC 编译环境
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64
+
+      # 生成 CMake 项目
+      - name: Generate CMake project
+        run: cmake -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=RelWithDebInfo -S . -B build -G Ninja
+
+      # 构建 64 位 RelWithDebInfo DLL
+      - name: Build 64bit RelWithDebInfo DLL
+        run: cmake --build ./build --config RelWithDebInfo --target YimMenuV2 --
+
+      # 上传 DLL 构建产物
+      - name: Upload DLL Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YimMenuV2.dll
+          path: build/YimMenuV2.dll
+
+      # 上传 PDB 调试文件
+      - name: Upload PDB Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YimMenuV2.pdb
+          path: build/YimMenuV2.pdb
+
+      # 生成构建信息（SHA、分支等）
+      - name: Generate Build Info
+        id: var
+        run: |
+          echo "full_sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
+          echo "short_sha=$(git rev-parse --short HEAD)" >> $env:GITHUB_OUTPUT
+          echo "branch=$(git branch --show-current)" >> $env:GITHUB_OUTPUT
+
+      # 获取提交计数
+      - name: Get Commit Count
+        id: count
+        run: |
+          echo "commit_count=$(git rev-list --count HEAD)" >> $env:GITHUB_OUTPUT
+
+      # 提取推送的提交信息
+      - name: Extract Pushed Commits
+        id: commit_info
+        shell: pwsh
+        run: |
+          git fetch --prune --unshallow
+
+          $beforeSha = "${{ github.event.before }}"
+          $afterSha = "${{ github.event.after }}"
+          $repo = "${{ github.repository }}"
+
+          Write-Host "获取从 $beforeSha 到 $afterSha 的提交"
+
+          $commits = git rev-list --reverse "$beforeSha..$afterSha"
+          $formattedCommits = @()
+
+          foreach ($commit in $commits) {
+              $hash = git rev-parse --short=7 $commit
+              $message = git log -1 --format="%s" $commit
+              $author = git log -1 --format="%an" $commit
+              $date = git log -1 --format="%ad" --date=short $commit
+
+              # 替换 # 为 - 加空格，防止 GitHub 自动识别为 issue 链接
+              $message = $message -replace '#', '- '
+
+              $formattedCommits += "- ${hash}: ${message} (${author}, ${date})"
+          }
+
+          if ($formattedCommits.Count -eq 0) {
+              Write-Host "未找到提交，使用最新提交"
+              $commit = git rev-parse HEAD
+              $hash = git rev-parse --short=7 $commit
+              $message = git log -1 --format="%s" $commit
+              $author = git log -1 --format="%an" $commit
+              $date = git log -1 --format="%ad" --date=short $commit
+
+              $message = $message -replace '#', '- '
+
+              $formattedCommits += "- ${hash}: ${message} (${author}, ${date})"
+          }
+
+          $commitMessage = $formattedCommits -join "`n"
+          echo "commits<<EOF" >> $env:GITHUB_OUTPUT
+          echo "$commitMessage" >> $env:GITHUB_OUTPUT
+          echo "EOF" >> $env:GITHUB_OUTPUT
+
+          Write-Host "本次推送的提交:"
+          Write-Host $commitMessage
+
+  # ========================================
+  # 第四阶段：创建/更新 Release 发布
+  # ========================================
+  recreate_release:
+    runs-on: ubuntu-latest
+    name: Recreate Release
+    needs: build_nightly
+    if: needs.check_recent_commit.outputs.should_run == 'true'
+    steps:
+      # 检出构建时的特定提交
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build_nightly.outputs.full_sha }}
+          fetch-depth: 0
+
+      # 删除现有的 nightly 发布和标签
+      - name: Delete Existing Release (nightly)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = "${{ needs.build_nightly.outputs.branch }}";
+            const tag = `nightly-${branch}`;
+            const releases = await github.rest.repos.listReleases({ owner, repo });
+            const release = releases.data.find(r => r.tag_name === tag);
+            if (release) {
+              await github.rest.repos.deleteRelease({ owner, repo, release_id: release.id });
+            }
+            try {
+              await github.rest.git.deleteRef({ owner, repo, ref: `tags/${tag}` });
+            } catch (e) {
+              console.log(`No existing ${tag} tag to delete`);
+            }
+
+      # 下载 DLL 构建产物
+      - name: Download DLL Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: YimMenuV2.dll
+
+      # 下载 PDB 调试文件
+      - name: Download PDB Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: YimMenuV2.pdb
+
+      # 生成 SHA256 校验和
+      - name: Echo build sha256
+        id: build_sha
+        run: |
+          sha256sum YimMenuV2.dll > sha256.checksum
+          echo "build_sha=$(cat sha256.checksum)" >> $GITHUB_OUTPUT
+          cat sha256.checksum
+
+      # ========================================
+      # 创建最新版本发布（nightly-joy 或 nightly-enhanced）
+      # ========================================
+      - name: Nightly Release (latest)
+        uses: softprops/action-gh-release@v2.2.2
+        with:
+          name: Nightly [${{ needs.build_nightly.outputs.short_sha }}] (push - ${{ needs.build_nightly.outputs.branch }})
+          tag_name: nightly-${{ needs.build_nightly.outputs.branch }}
+          target_commitish: ${{ needs.build_nightly.outputs.full_sha }}
+          body: |
+            [Link to build](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            **Latest nightly build**
+            Branch: `${{ needs.build_nightly.outputs.branch }}`
+            Trigger: `${{ github.event_name }}`
+            Commit: `${{ needs.build_nightly.outputs.full_sha }}`
+
+            Build SHA256:
+            ```
+            ${{ steps.build_sha.outputs.build_sha }}
+            ```
+
+            To verify the build SHA256 during the action, click the build link, go-to "Recreate Release", open the "Echo build sha256" step and read the sha256.
+
+            You can download the build artifacts, generate a SHA256 checksum and compare it with the below binary.
+            Build artifacts ARE NOT automatically the same as release assets since release assets can be modified afterwards.
+
+            These are nightly builds of YimMenuV2, they are provided for testing purposes only:
+            - Test if your build environment produces a broken YimMenuV2.dll
+            - Test if source code is out of date and no longer compatible with the current version of Grand Theft Auto V: Enhanced
+
+            If you wish to use this menu as-is you are on your own, no warranty is provided.
+          files: |
+            YimMenuV2.dll
+            YimMenuV2.pdb
+
+      # ========================================
+      # 创建归档版本发布（包含完整提交列表）
+      # ========================================
+      - name: Nightly Release (archived)
+        uses: softprops/action-gh-release@v2.2.2
+        with:
+          name: Nightly Archive [${{ needs.build_nightly.outputs.commit_count }}] (${{ needs.build_nightly.outputs.branch }})
+          tag_name: nightly-${{ needs.build_nightly.outputs.branch }}-${{ needs.build_nightly.outputs.commit_count }}
+          target_commitish: ${{ needs.build_nightly.outputs.full_sha }}
+          body: |
+            [Link to build](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            **Archived nightly build**
+            Branch: `${{ needs.build_nightly.outputs.branch }}`
+            Trigger: `${{ github.event_name }}`
+            Commit: `${{ needs.build_nightly.outputs.full_sha }}`
+
+            Build SHA256:
+            ```
+            ${{ steps.build_sha.outputs.build_sha }}
+            ```
+
+            **Commits in this push**
+
+            ${{ needs.build_nightly.outputs.commits }}
+          files: |
+            YimMenuV2.dll
+            YimMenuV2.pdb
