@@ -164,16 +164,17 @@ jobs:
       # 生成构建信息（SHA、分支等）
       - name: Generate Build Info
         id: var
+        shell: bash
         run: |
           echo "full_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
           echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          # 获取当前实际检出的分支名称（不是工作流所在的分支）
-          echo "branch=$(git branch --show-current)" >> $GITHUB_OUTPUT
 
       # 获取提交计数
       - name: Get Commit Count
         id: count
+        shell: bash
         run: |
+          # 确保获取提交计数，即使在分离HEAD状态
           echo "commit_count=$(git rev-list --count HEAD)" >> $GITHUB_OUTPUT
 
       # 提取推送的提交信息
