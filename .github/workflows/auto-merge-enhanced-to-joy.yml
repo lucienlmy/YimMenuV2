@@ -113,7 +113,7 @@ jobs:
     runs-on: windows-latest
     name: Build Nightly
     needs: [check_and_merge, merge-to-joy]
-    if: needs.check_and_merge.outputs.should_run == 'true'
+    if: needs.check_and_merge.outputs.should_run == 'true' && needs.check_and_merge.outputs.need_merge == 'true'
     outputs:
       full_sha: ${{ steps.var.outputs.full_sha }}
       short_sha: ${{ steps.var.outputs.short_sha }}
@@ -128,6 +128,12 @@ jobs:
           ref: Joy  # 检出 Joy 分支
           submodules: recursive
           fetch-depth: 0
+
+      # 配置 Git 提交者身份
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
 
       # 检查 CMake 版本
       - name: Check CMake version
@@ -182,6 +188,8 @@ jobs:
         id: commit_info
         shell: pwsh
         run: |
+          # 确保获取所有远程分支的最新信息
+          git fetch --all
           git fetch --prune --unshallow
 
           $beforeSha = "${{ github.event.before }}"
@@ -192,6 +200,7 @@ jobs:
           Write-Host "事件类型: $eventName"
           Write-Host "Before SHA: $beforeSha"
           Write-Host "After SHA: $afterSha"
+          Write-Host "当前 HEAD: $(git rev-parse HEAD)"
 
           $formattedCommits = @()
 
@@ -216,12 +225,37 @@ jobs:
           } elseif ($eventName -eq "workflow_dispatch" -or $eventName -eq "schedule") {
               Write-Host "手动或定时触发，获取变基合并的提交"
               try {
+                  # 切换到 Joy 分支
+                  git checkout Joy
+
+                  Write-Host "切换到 Joy 分支后 HEAD: $(git rev-parse HEAD)"
+
+                  # 获取 Joy 和 enhanced 的最新提交
+                  $joyLatest = git rev-parse HEAD
+                  $enhancedLatest = git rev-parse origin/enhanced
+
+                  Write-Host "Joy 最新提交: $joyLatest"
+                  Write-Host "enhanced 最新提交: $enhancedLatest"
+
                   # 获取 Joy 和 enhanced 的共同祖先
-                  $mergeBase = git merge-base Joy origin/enhanced
+                  $mergeBase = git merge-base HEAD origin/enhanced
                   Write-Host "共同祖先: $mergeBase"
-                  
-                  # 获取从共同祖先到当前 Joy 分支的所有提交
-                  $commits = git rev-list --reverse "$mergeBase..HEAD"
+
+                  # 始终从 Joy 分支获取从共同祖先开始的所有提交
+                  # 变基后 enhanced 的提交会有新的 SHA，所以直接从 Joy 获取
+                  Write-Host "从 Joy 分支获取从共同祖先开始的所有提交"
+
+                  # 先添加共同祖先本身，再添加从共同祖先之后的所有提交
+                  $allCommits = @()
+                  $allCommits += $mergeBase
+                  $newCommits = git rev-list --reverse "$mergeBase..HEAD"
+                  if ($newCommits) {
+                      $allCommits += ($newCommits -split "`n" | Where-Object { $_ -ne '' })
+                  }
+                  $commits = $allCommits
+
+                  Write-Host "找到 $($commits.Count) 个提交"
+
                   foreach ($commit in $commits) {
                       $hash = git rev-parse --short=7 $commit
                       $message = git log -1 --format="%s" $commit
@@ -233,26 +267,30 @@ jobs:
 
                       $formattedCommits += "- ${hash}: ${message} (${author}, ${date})"
                   }
+
+                  # 如果还是没有找到提交，使用备用方案获取 enhanced 分支的所有提交
+                  if ($formattedCommits.Count -eq 0) {
+                      Write-Host "备用方案：获取 enhanced 分支从共同祖先开始的所有提交"
+                      $commits = git rev-list --reverse "$mergeBase..origin/enhanced"
+                      Write-Host "备用方案找到 $($commits.Count) 个提交"
+
+                      foreach ($commit in $commits) {
+                          $hash = git rev-parse --short=7 $commit
+                          $message = git log -1 --format="%s" $commit
+                          $author = git log-1 --format="%an" $commit
+                          $date = git log -1 --format="%ad" --date=short $commit
+
+                          $message = $message -replace '#', '- '
+                          $formattedCommits += "- ${hash}: ${message} (${author}, ${date})"
+                      }
+                  }
               } catch {
                   Write-Host "获取变基提交失败: $($_.Exception.Message)"
               }
           }
 
           if ($formattedCommits.Count -eq 0) {
-              Write-Host "未找到提交，使用最新提交"
-              try {
-                  $commit = git rev-parse HEAD
-                  $hash = git rev-parse --short=7 $commit
-                  $message = git log -1 --format="%s" $commit
-                  $author = git log -1 --format="%an" $commit
-                  $date = git log -1 --format="%ad" --date=short $commit
-
-                  $message = $message -replace '#', '- '
-
-                  $formattedCommits += "- ${hash}: ${message} (${author}, ${date})"
-              } catch {
-                  Write-Host "获取最新提交失败: $($_.Exception.Message)"
-              }
+              Write-Host "未找到提交，保持提交记录为空"
           }
 
           $commitMessage = $formattedCommits -join "`n"
