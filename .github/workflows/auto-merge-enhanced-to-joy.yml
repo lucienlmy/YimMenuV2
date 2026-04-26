@@ -17,10 +17,73 @@ concurrency:
 
 jobs:
   # ========================================
-  # 第一阶段：合并 enhanced 分支到 Joy 分支
+  # 第一阶段：检查 enhanced 是否有 Joy 没有的提交
+  # ========================================
+  check_and_merge:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      need_merge: ${{ steps.check.outputs.need_merge }}
+    steps:
+      # 检出完整仓库历史
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 获取 Joy 分支（确保本地有 Joy 分支）
+      - name: 获取 Joy 分支
+        run: |
+          git fetch origin Joy:Joy
+
+      # 检查是否需要合并和构建
+      - name: 检查是否需要合并
+        id: check
+        run: |
+          # 获取 Joy 和 enhanced 的共同祖先
+          merge_base=$(git merge-base Joy origin/enhanced)
+          echo "共同祖先: $merge_base"
+
+          # 获取 enhanced 的最新提交
+          enhanced_latest=$(git rev-parse origin/enhanced)
+          echo "enhanced 最新提交: $enhanced_latest"
+
+          # 获取 Joy 的最新提交
+          joy_latest=$(git rev-parse Joy)
+          echo "Joy 最新提交: $joy_latest"
+
+          # 检查 enhanced 是否有 Joy 没有的提交
+          # 如果 enhanced 最新提交不是共同祖先，说明有 Joy 没有的提交
+          if [ "$merge_base" != "$enhanced_latest" ]; then
+            echo "need_merge=true" >> $GITHUB_OUTPUT
+            echo "检测到 enhanced 有 Joy 没有的提交，需要合并"
+          else
+            echo "need_merge=false" >> $GITHUB_OUTPUT
+            echo "enhanced 没有 Joy 没有的提交，跳过合并"
+          fi
+
+          # push 和 workflow_dispatch 事件始终执行合并和构建
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "push 事件，始终执行"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "手动触发，始终执行"
+          elif [ "$merge_base" != "$enhanced_latest" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "定时任务检测到有变化，执行合并和构建"
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "定时任务检测到没有变化，跳过合并和构建"
+          fi
+
+  # ========================================
+  # 第二阶段：执行变基合并（仅当需要合并时）
   # ========================================
   merge-to-joy:
     runs-on: ubuntu-latest
+    needs: check_and_merge
+    if: needs.check_and_merge.outputs.need_merge == 'true'
     steps:
       # 检出完整仓库历史
       - name: Checkout repository
@@ -35,51 +98,13 @@ jobs:
           git config --global user.email "actions@github.com"
 
       # 切换到 Joy 分支并变基到 enhanced
-      - name: Merge enhanced to Joy
-        id: merge
+      - name: 执行变基合并
         run: |
-          # 记录变基前的 Joy 分支 SHA
-          echo "old_joy_sha=$(git rev-parse Joy)" >> $GITHUB_OUTPUT
           git checkout Joy
           git rebase origin/enhanced
-          # 记录变基后的 Joy 分支 SHA
-          echo "new_joy_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
           git push origin Joy --force-with-lease
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # ========================================
-  # 第二阶段：检查是否有需要构建的提交
-  # ========================================
-  check_recent_commit:
-    runs-on: ubuntu-latest
-    name: Check Recent Commit
-    needs: merge-to-joy
-    outputs:
-      should_run: ${{ steps.should_run.outputs.should_run }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: Joy  # 检出 Joy 分支
-      - id: should_run
-        run: |
-          # 获取合并前后的 Joy 分支 SHA
-          old_sha="${{ needs.merge_to_joy.outputs.old_joy_sha }}"
-          new_sha="${{ needs.merge_to_joy.outputs.new_joy_sha }}"
-
-          # push 和 workflow_dispatch 事件始终执行
-          if [ "${{ github.event_name }}" = "push" ]; then
-            echo "should_run=true" >> $GITHUB_OUTPUT
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "should_run=true" >> $GITHUB_OUTPUT
-          # 定时任务检查：只有当合并产生了实际变化时才执行
-          elif [ "$old_sha" != "$new_sha" ]; then
-            echo "should_run=true" >> $GITHUB_OUTPUT
-            echo "检测到 Joy 分支有更新，执行构建"
-          else
-            echo "should_run=false" >> $GITHUB_OUTPUT
-            echo "Joy 分支没有变化，跳过构建"
-          fi
 
   # ========================================
   # 第三阶段：构建 Nightly 版本
@@ -87,12 +112,12 @@ jobs:
   build_nightly:
     runs-on: windows-latest
     name: Build Nightly
-    needs: check_recent_commit
-    if: needs.check_recent_commit.outputs.should_run == 'true'
+    needs: [check_and_merge, merge-to-joy]
+    if: needs.check_and_merge.outputs.should_run == 'true'
     outputs:
       full_sha: ${{ steps.var.outputs.full_sha }}
       short_sha: ${{ steps.var.outputs.short_sha }}
-      branch: ${{ steps.var.outputs.branch }}
+      branch: Joy  # 硬编码为 Joy 分支，确保标签名称有效
       commits: ${{ steps.commit_info.outputs.commits }}
       commit_count: ${{ steps.count.outputs.commit_count }}
     steps:
@@ -140,15 +165,16 @@ jobs:
       - name: Generate Build Info
         id: var
         run: |
-          echo "full_sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
-          echo "short_sha=$(git rev-parse --short HEAD)" >> $env:GITHUB_OUTPUT
-          echo "branch=$(git branch --show-current)" >> $env:GITHUB_OUTPUT
+          echo "full_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          # 获取当前实际检出的分支名称（不是工作流所在的分支）
+          echo "branch=$(git branch --show-current)" >> $GITHUB_OUTPUT
 
       # 获取提交计数
       - name: Get Commit Count
         id: count
         run: |
-          echo "commit_count=$(git rev-list --count HEAD)" >> $env:GITHUB_OUTPUT
+          echo "commit_count=$(git rev-list --count HEAD)" >> $GITHUB_OUTPUT
 
       # 提取推送的提交信息
       - name: Extract Pushed Commits
@@ -192,9 +218,9 @@ jobs:
           }
 
           $commitMessage = $formattedCommits -join "`n"
-          echo "commits<<EOF" >> $env:GITHUB_OUTPUT
-          echo "$commitMessage" >> $env:GITHUB_OUTPUT
-          echo "EOF" >> $env:GITHUB_OUTPUT
+          echo "commits<<EOF" >> $GITHUB_OUTPUT
+          echo "$commitMessage" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
           Write-Host "本次推送的提交:"
           Write-Host $commitMessage
@@ -206,7 +232,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Recreate Release
     needs: build_nightly
-    if: needs.check_recent_commit.outputs.should_run == 'true'
+    if: needs.check_and_merge.outputs.should_run == 'true'
     steps:
       # 检出构建时的特定提交
       - name: Checkout repository
