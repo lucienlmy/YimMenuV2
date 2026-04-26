@@ -213,8 +213,8 @@ jobs:
               } catch {
                   Write-Host "获取提交失败: $($_.Exception.Message)"
               }
-          } elseif ($eventName -eq "workflow_dispatch") {
-              Write-Host "手动触发，获取变基合并的提交"
+          } elseif ($eventName -eq "workflow_dispatch" -or $eventName -eq "schedule") {
+              Write-Host "手动或定时触发，获取变基合并的提交"
               try {
                   # 获取 Joy 和 enhanced 的共同祖先
                   $mergeBase = git merge-base Joy origin/enhanced
