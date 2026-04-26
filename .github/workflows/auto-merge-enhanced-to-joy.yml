@@ -5,7 +5,10 @@ on:
     branches:
       - enhanced
   schedule:
-    - cron: '*/5 * * * *'  # 每5分钟检查一次
+    # 选项1：每5分钟检查一次（测试用）
+    - cron: '*/5 * * * *'
+    # 选项2：每天 UTC 时间 14:00 执行一次（北京时间 22:00）
+    - cron: "0 14 * * *"
   workflow_dispatch:  # 允许手动触发
 
 concurrency:
@@ -35,10 +38,13 @@ jobs:
       - name: Merge enhanced to Joy
         id: merge
         run: |
+          # 记录变基前的 Joy 分支 SHA
+          echo "old_joy_sha=$(git rev-parse Joy)" >> $GITHUB_OUTPUT
           git checkout Joy
           git rebase origin/enhanced
+          # 记录变基后的 Joy 分支 SHA
+          echo "new_joy_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
           git push origin Joy --force-with-lease
-          echo "joy_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -48,6 +54,7 @@ jobs:
   check_recent_commit:
     runs-on: ubuntu-latest
     name: Check Recent Commit
+    needs: merge-to-joy
     outputs:
       should_run: ${{ steps.should_run.outputs.should_run }}
     steps:
@@ -56,16 +63,22 @@ jobs:
           ref: Joy  # 检出 Joy 分支
       - id: should_run
         run: |
+          # 获取合并前后的 Joy 分支 SHA
+          old_sha="${{ needs.merge_to_joy.outputs.old_joy_sha }}"
+          new_sha="${{ needs.merge_to_joy.outputs.new_joy_sha }}"
+
           # push 和 workflow_dispatch 事件始终执行
           if [ "${{ github.event_name }}" = "push" ]; then
             echo "should_run=true" >> $GITHUB_OUTPUT
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "should_run=true" >> $GITHUB_OUTPUT
-          # 定时任务检查 24 小时是否有新提交
-          elif [ -z "$(git rev-list --since="24 hours ago" --all)" ]; then
-            echo "should_run=false" >> $GITHUB_OUTPUT
-          else
+          # 定时任务检查：只有当合并产生了实际变化时才执行
+          elif [ "$old_sha" != "$new_sha" ]; then
             echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "检测到 Joy 分支有更新，执行构建"
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "Joy 分支没有变化，跳过构建"
           fi
 
   # ========================================
