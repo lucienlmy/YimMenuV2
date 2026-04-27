@@ -6,7 +6,7 @@ on:
       - enhanced
   schedule:
     # 选项1：每5分钟检查一次（测试用）
-    - cron: '*/5 * * * *'
+    #- cron: '*/5 * * * *'
     # 选项2：每天 UTC 时间 14:00 执行一次（北京时间 22:00）
     - cron: "0 14 * * *"
   workflow_dispatch:  # 允许手动触发
@@ -215,7 +215,7 @@ jobs:
                       $date = git log -1 --format="%ad" --date=short $commit
 
                       # 替换 # 为 - 加空格，防止 GitHub 自动识别为 issue 链接
-                      $message = $message -replace '#', '- '
+                      # $message = $message -replace '#', '- '
 
                       $formattedCommits += "- ${hash}: ${message} (${author}, ${date})"
                   }
@@ -263,7 +263,7 @@ jobs:
                       $date = git log -1 --format="%ad" --date=short $commit
 
                       # 替换 # 为 - 加空格，防止 GitHub 自动识别为 issue 链接
-                      $message = $message -replace '#', '- '
+                      # $message = $message -replace '#', '- '
 
                       $formattedCommits += "- ${hash}: ${message} (${author}, ${date})"
                   }
